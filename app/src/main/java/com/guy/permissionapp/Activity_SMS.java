@@ -96,6 +96,7 @@ public class Activity_SMS extends AppCompatActivity {
                     start();
                 }
             });
+            alertBuilder.setNeutralButton("No", null);
             alertBuilder.show();
         } else {
             AlertDialog.Builder alertBuilder = new AlertDialog.Builder(this);

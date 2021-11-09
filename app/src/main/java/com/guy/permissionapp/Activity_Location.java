@@ -1,18 +1,37 @@
 package com.guy.permissionapp;
 
+import androidx.activity.result.ActivityResult;
+import androidx.activity.result.ActivityResultCallback;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.IntentSenderRequest;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.Nullable;
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.content.ContextCompat;
 
+import android.Manifest;
 import android.content.Context;
+import android.content.DialogInterface;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.location.LocationManager;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
 import android.util.Log;
 import android.view.View;
 
+import com.google.android.gms.common.api.ApiException;
+import com.google.android.gms.common.api.ResolvableApiException;
+import com.google.android.gms.location.LocationRequest;
+import com.google.android.gms.location.LocationServices;
+import com.google.android.gms.location.LocationSettingsRequest;
+import com.google.android.gms.location.LocationSettingsStatusCodes;
+import com.google.android.gms.location.SettingsClient;
 import com.google.android.material.button.MaterialButton;
+import com.google.android.material.snackbar.Snackbar;
 import com.google.android.material.textview.MaterialTextView;
 
 public class Activity_Location extends AppCompatActivity {
@@ -61,9 +80,20 @@ public class Activity_Location extends AppCompatActivity {
     }
 
     private void start() {
+        String missingPermission = checkForMissingPermission(this);
         if (!isLocationEnabled(this)) {
             state = STATE.LOCATION_DISABLE;
-        } else if
+        } else if (missingPermission != null) {
+            if (missingPermission.equals(Manifest.permission.ACCESS_BACKGROUND_LOCATION)) {
+                state = STATE.NO_BACKGROUND_PERMISSION;
+            } else {
+                state = STATE.NO_REGULAR_PERMISSION;
+            }
+        } else {
+            state = STATE.LOCATION_SETTINGS_PROCCESS;
+            // All permissions granted
+            validateLocationSensorsEnabled();
+        }
         updateUI();
     }
 
@@ -89,7 +119,7 @@ public class Activity_Location extends AppCompatActivity {
             location_LBL_content.setText("Location permission is needed for core functionality.\nPlease Enable the app permission to access your location data");
             location_LBL_progress.setText("2/4");
             location_BTN_next.setOnClickListener(v -> {
-                //askForPermissions(checkForMissingPermission(this));
+                askForPermissions(checkForMissingPermission(this));
             });
             location_BTN_next.setText("Allow");
             location_BTN_back.setVisibility(View.VISIBLE);
@@ -99,7 +129,7 @@ public class Activity_Location extends AppCompatActivity {
             location_LBL_content.setText("This app collects location data even when the app is closed or not in use.\nTo protect your privacy, the app stores only calculated indicators, like distance from home and never exact location.\nA notification is always displayed in the notifications bar when service is running.");
             location_LBL_progress.setText("3/4");
             location_BTN_next.setOnClickListener(v -> {
-                //askForPermissions(checkForMissingPermission(this));
+                askForPermissions(checkForMissingPermission(this));
             });
             location_BTN_next.setText("Allow");
             location_BTN_back.setVisibility(View.VISIBLE);
@@ -107,6 +137,7 @@ public class Activity_Location extends AppCompatActivity {
         } else if (state == STATE.LOCATION_SETTINGS_PROCCESS) {
             location_LBL_title.setText("4");
             location_LBL_content.setText("LOCATION_SETTINGS_PROCCESS");
+            location_LBL_progress.setText("");
             location_BTN_back.setVisibility(View.INVISIBLE);
             location_BTN_next.setVisibility(View.INVISIBLE);
         } else if (state == STATE.LOCATION_SETTINGS_OK) {
@@ -121,6 +152,138 @@ public class Activity_Location extends AppCompatActivity {
             location_BTN_back.setVisibility(View.INVISIBLE);
             location_BTN_next.setVisibility(View.VISIBLE);
         }
+    }
+
+    private ActivityResultLauncher<String> requestPermissionLauncher =
+            registerForActivityResult(new ActivityResultContracts.RequestPermission(), isGranted -> {
+                if (isGranted) {
+                    Log.d("pttt", "isGranted");
+                    // Permission is granted. Continue the action or workflow in your
+                    // app.
+                    start();
+                } else {
+                    Log.d("pttt", "NOT Granted");
+                    // Explain to the user that the feature is unavailable because the
+                    // features requires a permission that the user has denied. At the
+                    // same time, respect the user's decision. Don't link to system
+                    // settings in an effort to convince the user to change their
+                    // decision.
+
+                    if (shouldShowRequestPermissionRationale(checkForMissingPermission(Activity_Location.this))) {
+                        Snackbar.make(findViewById(android.R.id.content),
+                                R.string.permission_rationale,
+                                Snackbar.LENGTH_INDEFINITE)
+                                .setDuration(Snackbar.LENGTH_LONG)
+                                .setAction(R.string.settings, new View.OnClickListener() {
+                                    @Override
+                                    public void onClick(View view) {
+                                        requestPermissionLauncher.launch(checkForMissingPermission(Activity_Location.this));
+                                    }
+                                })
+                                .show();
+                    } else {
+                        buildAlertMessageManuallyBackgroundPermission(checkForMissingPermission(Activity_Location.this));
+                    }
+                }
+            });
+
+    private void buildAlertMessageManuallyBackgroundPermission(String permission) {
+        if (permission == null) {
+            return;
+        }
+
+        final AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        String sofix = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q ? "Allow all the time" : "Allow";
+
+        builder.setMessage("You need to enable background location permission manually." +
+                "\nOn the page that opens - click on PERMISSIONS, then on LOCATION and then check '" + sofix + "'")
+                .setCancelable(false)
+                .setPositiveButton("OK", new DialogInterface.OnClickListener() {
+                    public void onClick(final DialogInterface dialog, final int id) {
+                        openAppSettings();                    }
+                })
+                .setNegativeButton("Cancel", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {
+                        finish();
+                    }
+                });
+        final AlertDialog alert = builder.create();
+        alert.show();
+    }
+
+    ActivityResultLauncher<IntentSenderRequest> locationClientSettingsResultLauncher = registerForActivityResult(
+            new ActivityResultContracts.StartIntentSenderForResult(),
+            new ActivityResultCallback<ActivityResult>() {
+                @Override
+                public void onActivityResult(ActivityResult result) {
+                    Log.d("pttt", "onActivityResult2" + result.toString());
+                    if (result.getResultCode() == RESULT_CANCELED) {
+                        finish();
+                    } else {
+                        start();
+                    }
+                }
+            });
+
+    ActivityResultLauncher<Intent> appSettingsResultLauncher = registerForActivityResult(
+            new ActivityResultContracts.StartActivityForResult(),
+            new ActivityResultCallback<ActivityResult>() {
+                @Override
+                public void onActivityResult(ActivityResult result) {
+                    Log.d("pttt", "onActivityResult" + result.toString());
+                    start();
+                }
+            });
+
+    private void openAppSettings() {
+        Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.fromParts("package", getPackageName(), null));
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        appSettingsResultLauncher.launch(intent);
+    }
+
+    private void askForPermissions(String permission) {
+        Log.d("pttt", "permission = " + permission);
+        if (shouldShowRequestPermissionRationale(permission)) {
+            Log.d("pttt", "shouldShowRequestPermissionRationale");
+            // In an educational UI, explain to the user why your app requires this
+            // permission for a specific feature to behave as expected. In this UI,
+            // include a "cancel" or "no thanks" button that allows the user to
+            // continue using your app without granting the permission.
+
+            if (permission.equals(Manifest.permission.ACCESS_BACKGROUND_LOCATION)  &&  Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                // This is a new method provided in API 30
+                // Manually background location permission
+                buildAlertMessageManuallyBackgroundPermission(permission);
+            } else {
+                requestPermissionLauncher.launch(permission);
+            }
+
+        } else {
+            // 1. First Time
+            // 2. Don't Ask Me Again state
+
+
+            Log.d("pttt", "NOT shouldShowRequestPermissionRationale");
+            // You can directly ask for the permission.
+            // The registered ActivityResultCallback gets the result of this request.
+            requestPermissionLauncher.launch(permission);
+        }
+    }
+
+    private static String checkForMissingPermission(Context context) {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            return Manifest.permission.ACCESS_FINE_LOCATION;
+        }
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            return Manifest.permission.ACCESS_COARSE_LOCATION;
+        }
+        if (Build.VERSION.SDK_INT >= 29  &&  ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_BACKGROUND_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            return Manifest.permission.ACCESS_BACKGROUND_LOCATION;
+        }
+
+        return null;
     }
 
     private void enableLocationServicesProgrammatically() {
@@ -139,6 +302,69 @@ public class Activity_Location extends AppCompatActivity {
                     Settings.Secure.LOCATION_MODE_OFF);
             return (mode != Settings.Secure.LOCATION_MODE_OFF);
         }
+    }
+
+    private void validateLocationSensorsEnabled() {
+        // Check whether location settings are satisfied
+        // https://developers.google.com/android/reference/com/google/android/gms/location/SettingsClient
+        LocationSettingsRequest.Builder builder = new LocationSettingsRequest.Builder();
+
+        builder.addLocationRequest(LocationRequest.create().setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY));
+        builder.setAlwaysShow(true);
+        LocationSettingsRequest mLocationSettingsRequest = builder.build();
+
+        SettingsClient mSettingsClient = LocationServices.getSettingsClient(this);
+
+        mSettingsClient
+                .checkLocationSettings(mLocationSettingsRequest)
+                .addOnSuccessListener(locationSettingsResponse -> {
+                    int x = 0;
+                    int y = x + 0;
+                    state = STATE.LOCATION_SETTINGS_OK;
+                    updateUI();
+                })
+                .addOnFailureListener(e -> {
+                    int statusCode = ((ApiException) e).getStatusCode();
+                    switch (statusCode) {
+                        case LocationSettingsStatusCodes.RESOLUTION_REQUIRED:
+                            try {
+
+                                ResolvableApiException resolvable = (ResolvableApiException) e;
+                                IntentSenderRequest intentSenderRequest = new IntentSenderRequest.Builder(resolvable.getResolution()).build();
+                                locationClientSettingsResultLauncher.launch(intentSenderRequest);
+
+
+                                // // Cast to a resolvable exception.
+                                // ResolvableApiException resolvable = (ResolvableApiException) e;
+                                // // Show the dialog by calling startResolutionForResult(),
+                                // // and check the result in onActivityResult().
+                                // resolvable.startResolutionForResult(Activity_LocationValidationPro.this, 123);
+                            } catch (Exception sie) {
+                                Log.e("GPS", "Unable to execute request.");
+                            }
+                            break;
+                        case LocationSettingsStatusCodes.SETTINGS_CHANGE_UNAVAILABLE:
+                            // 	Location settings can't be changed to meet the requirements, no dialog pops up
+
+                            /*
+                                Instead the default Yes, Not now and Never buttons if you call setAlwaysShow(true);
+                                you will have only Yes and No, so the user won't choose Never and you will never
+                                receive SETTINGS_CHANGE_UNAVAILABLE
+
+                                ! Note !
+                                if you have airplane mode on, and location off while requesting this,
+                                you will actually receive a SETTINGS_CHANGE_UNAVAILABLE, even if you have setAlwaysShow
+                             */
+
+                            // Ask to disable Airplane Mode
+                            // or
+                            // Manually enable GPS
+                            // buildAlertMessageNoGps();
+                            Log.e("GPS", "Location settings are inadequate, and cannot be fixed here. Fix in Settings.");
+                            break;
+                    }
+                })
+                .addOnCanceledListener(() -> Log.e("GPS", "checkLocationSettings -> onCanceled"));
     }
 
     private void initViews() {
